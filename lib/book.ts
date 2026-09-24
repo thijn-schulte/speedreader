@@ -1,6 +1,6 @@
 import JSZip from "jszip";
 
-export type Word = { text: string; chapter: number; block: number; sentenceStart: number };
+export type Word = { text: string; chapter: number; block: number; sentenceStart: number; bold?: boolean; italic?: boolean };
 export type Block = { type: "text" | "heading" | "image"; chapter: number; start: number; end: number; imageId?: string; alt?: string };
 export type Chapter = { title: string; start: number; end: number; blockStart: number; depth?: number };
 export type Book = { id: string; title: string; author?: string; kind: "text" | "epub"; words: Word[]; blocks: Block[]; chapters: Chapter[]; images: { id: string; blob: Blob }[]; position: number; completed: boolean; pendingImage?: string };
@@ -40,6 +40,35 @@ const appendWords = (book: Book, text: string, chapter: number, block: number, s
   return sentence;
 };
 
+type StyledText = { text: string; bold: boolean; italic: boolean };
+// Keep one word when inline markup starts or ends in the middle of it.
+const appendStyledWords = (book: Book, runs: StyledText[], chapter: number, block: number, startSentence: number) => {
+  let sentence = startSentence, text = "", bold = false, italic = false;
+  const flush = () => {
+    if (!text) return;
+    if (!/[\p{L}\p{N}]/u.test(text)) {
+      const previous = book.words[book.words.length - 1];
+      if (previous) { previous.text += text; previous.bold ||= bold; previous.italic ||= italic; }
+    } else {
+      const word: Word = { text: text.normalize("NFC"), chapter, block, sentenceStart: sentence };
+      if (bold) word.bold = true;
+      if (italic) word.italic = true;
+      book.words.push(word);
+      if (sentenceEnd(word.text)) sentence = book.words.length;
+    }
+    text = ""; bold = false; italic = false;
+  };
+  for (const run of runs) {
+    for (const part of run.text.split(/(\s+)/)) {
+      if (!part) continue;
+      if (/^\s+$/.test(part)) flush();
+      else { text += part; bold ||= run.bold; italic ||= run.italic; }
+    }
+  }
+  flush();
+  return sentence;
+};
+
 export function bookFromText(input: string): Book {
   const book: Book = { id: newId(), title: "Mijn tekst", kind: "text", words: [], blocks: [], chapters: [{ title: "Mijn tekst", start: 0, end: 0, blockStart: 0 }], images: [], position: 0, completed: false };
   let sentence = 0;
@@ -74,6 +103,22 @@ export async function bookFromEpub(file: File): Promise<Book> {
   const author = elements(metadata || opf, "creator")[0]?.textContent?.trim() || undefined;
   if (elements(opf, "meta").some((e) => attr(e, "name") === "fixed-layout" || (attr(e, "property") === "rendition:layout" && e.textContent?.trim() === "pre-paginated"))) throw new Error("Een EPUB met vaste pagina-indeling kan deze versie nog niet lezen.");
   const manifest = new Map(elements(opf, "item").map((e) => [attr(e, "id"), { path: normPath(base, attr(e, "href")), type: attr(e, "media-type"), props: attr(e, "properties") }]));
+  const classStyles = new Map<string, { bold: boolean; italic: boolean }>();
+  for (const item of manifest.values()) {
+    if (item.type !== "text/css" || !zip.file(item.path)) continue;
+    const css = await zip.file(item.path)!.async("text");
+    for (const [, selector, declarations] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const bold = /(?:^|;)\s*font-weight\s*:\s*(?:bold|bolder|[6-9]00)\b/i.test(declarations);
+      const italic = /(?:^|;)\s*font-style\s*:\s*(?:italic|oblique)\b/i.test(declarations);
+      if (!bold && !italic) continue;
+      for (const part of selector.split(",")) {
+        const match = /^\.([\w-]+)$/.exec(part.trim());
+        if (!match) continue;
+        const previous = classStyles.get(match[1]);
+        classStyles.set(match[1], { bold: bold || !!previous?.bold, italic: italic || !!previous?.italic });
+      }
+    }
+  }
   const spine = elements(opf, "spine")[0];
   const sections = spine ? Array.from(spine.children).filter((e) => e.localName === "itemref").map((e) => manifest.get(attr(e, "idref"))).filter((x): x is NonNullable<typeof x> => !!x) : [];
   if (!sections.length) throw new Error("In dit EPUB-bestand is geen leesvolgorde gevonden.");
@@ -117,9 +162,9 @@ export async function bookFromEpub(file: File): Promise<Book> {
       book.chapters.push({ title: sectionTitle || "Voorwerk", start: book.words.length, end: book.words.length, blockStart: book.blocks.length, depth: entryTitle?.depth || 0 });
     }
     const chapter = book.chapters.length - 1;
-    const addText = (text: string, type: "text" | "heading") => {
+    const addText = (runs: StyledText[], type: "text" | "heading") => {
       const start = book.words.length, index = book.blocks.length;
-      sentence = appendWords(book, text, chapter, index, sentence);
+      sentence = appendStyledWords(book, runs, chapter, index, sentence);
       if (book.words.length > start) book.blocks.push({ type, chapter, start, end: book.words.length });
     };
     const walk = async (node: Element): Promise<void> => {
@@ -144,17 +189,24 @@ export async function bookFromEpub(file: File): Promise<Book> {
         return;
       }
       if (["p", "h1", "h2", "h3", "h4", "li", "blockquote"].includes(tag)) {
-        let text = "";
-        const flush = () => { if (text.trim()) addText(text, tag.startsWith("h") ? "heading" : "text"); text = ""; };
-        const collect = async (child: Node): Promise<void> => {
-          if (child.nodeType === Node.TEXT_NODE) { text += child.textContent || ""; return; }
+        let runs: StyledText[] = [];
+        const flush = () => { if (runs.some(run => run.text.trim())) addText(runs, tag.startsWith("h") ? "heading" : "text"); runs = []; };
+        const collect = async (child: Node, bold: boolean, italic: boolean): Promise<void> => {
+          if (child.nodeType === Node.TEXT_NODE) { runs.push({ text: child.textContent || "", bold, italic }); return; }
           if (child.nodeType !== Node.ELEMENT_NODE) return;
           const el = child as Element;
           if (["img", "image", "svg"].includes(el.localName)) { flush(); await walk(el); return; }
           if (["script", "style", "audio", "iframe"].includes(el.localName)) return;
-          for (const n of Array.from(el.childNodes)) await collect(n);
+          const name = el.localName.toLowerCase(), style = attr(el, "style");
+          const classes = attr(el, "class").split(/\s+/).map(key => classStyles.get(key));
+          const nextBold = bold || ["b", "strong"].includes(name) || /(?:^|;)\s*font-weight\s*:\s*(?:bold|bolder|[6-9]00)\b/i.test(style) || classes.some(value => value?.bold);
+          const nextItalic = italic || ["i", "em", "cite", "dfn"].includes(name) || /(?:^|;)\s*font-style\s*:\s*(?:italic|oblique)\b/i.test(style) || classes.some(value => value?.italic);
+          for (const n of Array.from(el.childNodes)) await collect(n, nextBold, nextItalic);
         };
-        for (const child of Array.from(node.childNodes)) await collect(child);
+        const blockStyle = attr(node, "style"), blockClasses = attr(node, "class").split(/\s+/).map(key => classStyles.get(key));
+        const blockBold = /(?:^|;)\s*font-weight\s*:\s*(?:bold|bolder|[6-9]00)\b/i.test(blockStyle) || blockClasses.some(value => value?.bold);
+        const blockItalic = /(?:^|;)\s*font-style\s*:\s*(?:italic|oblique)\b/i.test(blockStyle) || blockClasses.some(value => value?.italic);
+        for (const child of Array.from(node.childNodes)) await collect(child, blockBold, blockItalic);
         flush();
         return;
       }
