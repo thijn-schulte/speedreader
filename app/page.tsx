@@ -1,5 +1,5 @@
 "use client";
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, FileText, List, Minus, Pause, Play, Plus, RotateCcw, Search, Settings2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,7 +75,7 @@ export default function Home(){
  useEffect(()=>{if(book&&screen==="reader")persist(cursor,done,imageQueue[0]?.imageId)},[book,cursor,screen,done,imageQueue]);
  const group=book?(()=>{const first=book.words[cursor];if(!first)return[];const result=[first];for(let i=cursor+1;i<book.words.length&&result.length<prefs.chunk;i++){if(book.words[i].chapter!==first.chapter||book.words[i].sentenceStart!==first.sentenceStart||book.blocks.some(b=>b.type==="image"&&b.start===i))break;result.push(book.words[i])}return result})():[];
  const word=group.map(w=>w.text).join(" "),percent=book?.words.length?Math.round(cursor/book.words.length*100):0;
- useEffect(()=>{if(!word)return;const base=Math.min(prefs.size,dim.w*.12),width=Math.min(dim.w,720)-28;
+ useLayoutEffect(()=>{if(!word)return;const base=Math.min(prefs.size,dim.w*.12),width=Math.min(dim.w,720)-28;
   const canvas=document.createElement("canvas"),context=canvas.getContext("2d");if(!context)return;
   context.font=`${base}px ${font}`;
   let measured=context.measureText(word).width;
