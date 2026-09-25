@@ -3,7 +3,7 @@ import JSZip from "jszip";
 export type Word = { text: string; chapter: number; block: number; sentenceStart: number; bold?: boolean; italic?: boolean };
 export type Block = { type: "text" | "heading" | "image"; chapter: number; start: number; end: number; imageId?: string; alt?: string };
 export type Chapter = { title: string; start: number; end: number; blockStart: number; depth?: number };
-export type Book = { id: string; title: string; author?: string; kind: "text" | "epub"; words: Word[]; blocks: Block[]; chapters: Chapter[]; images: { id: string; blob: Blob }[]; position: number; completed: boolean; pendingImage?: string };
+export type Book = { id: string; title: string; author?: string; kind: "text" | "epub"; words: Word[]; blocks: Block[]; chapters: Chapter[]; images: { id: string; blob: Blob }[]; position: number; completed: boolean; pendingImage?: string; pendingChapter?: number };
 
 const elements = (root: Element | Document, name: string) => Array.from(root.getElementsByTagName("*")).filter((e) => e.localName === name);
 const direct = (root: Element, name: string) => Array.from(root.children).find((e) => e.localName === name);
