@@ -71,6 +71,29 @@ export default function Home(){
  useEffect(()=>{if(book)try{localStorage.setItem("speedreader-position-v1",JSON.stringify({id:book.id,position:cursor}))}catch{}},[book,cursor]);
  useEffect(()=>{const map:Record<string,string>={};book?.images.forEach(i=>map[i.id]=URL.createObjectURL(i.blob));setUrls(map);return()=>Object.values(map).forEach(URL.revokeObjectURL)},[book?.id]);
  useEffect(()=>{const onHide=(event:Event)=>{if(document.hidden||event.type==="pagehide"){setPlaying(false);setControls(true);if(book)try{localStorage.setItem("speedreader-position-v1",JSON.stringify({id:book.id,position:cursor}))}catch{}if(book&&screen==="reader"){if(saveTimer.current)clearTimeout(saveTimer.current);saveBook({...book,position:cursor,completed:done,pendingImage:imageQueue[0]?.imageId,pendingChapter:chapterAt??undefined}).catch(()=>{})}}};document.addEventListener("visibilitychange",onHide);addEventListener("pagehide",onHide);return()=>{document.removeEventListener("visibilitychange",onHide);removeEventListener("pagehide",onHide)}},[book,screen,cursor,done,imageQueue,chapterAt]);
+ useEffect(()=>{
+  if(screen!=="reader"||!book||!("wakeLock" in navigator))return;
+  let lock:WakeLockSentinel|null=null,pending=false,disposed=false;
+  const acquire=async()=>{
+   if(pending||lock||document.visibilityState!=="visible")return;
+   pending=true;
+   try{
+    const next=await navigator.wakeLock.request("screen");
+    if(disposed||document.visibilityState!=="visible"){void next.release();return}
+    lock=next;
+    next.addEventListener("release",()=>{if(lock===next)lock=null});
+   }catch{
+    // The device can refuse a wake lock, for example when the battery is low.
+   }finally{pending=false}
+  };
+  const onVisibility=()=>{
+   if(document.visibilityState==="visible")void acquire();
+   else{const previous=lock;lock=null;void previous?.release()}
+  };
+  void acquire();
+  document.addEventListener("visibilitychange",onVisibility);
+  return()=>{disposed=true;document.removeEventListener("visibilitychange",onVisibility);void lock?.release()};
+ },[screen,book?.id]);
  const pages=useMemo(()=>book?makePages(book,prefs.size,dim.w,dim.h):[],[book,prefs.size,dim]),font=prefs.font==="georgia"?"Georgia, serif":prefs.font==="verdana"?"Verdana, sans-serif":"-apple-system, BlinkMacSystemFont, system-ui, sans-serif";
  const indexedWords=useMemo(()=>book?.words.map(w=>searchable(w.text))||[],[book]);
  const deferredQuery=useDeferredValue(searchQuery),searchTerms=useMemo(()=>deferredQuery.trim().split(/\s+/).map(searchable).filter(Boolean),[deferredQuery]);
